@@ -26,14 +26,21 @@
       <h2>3. Mode</h2>
       <div id="mode-list" class="choices"></div>
 
-      <h2>4. Getting to altitude</h2>
+      <h2>4. Suit</h2>
+      <div id="suit-list" class="choices"></div>
+
+      <h2>5. Weather</h2>
+      <div id="weather-list" class="choices"></div>
+
+      <h2>6. Getting to altitude</h2>
       <div id="climb-list" class="choices"></div>
 
-      <h2>5. Freefall speed</h2>
+      <h2>7. Freefall speed</h2>
       <div id="speed-list" class="choices"></div>
 
       <div class="start-row">
         <button id="start-btn" class="big" type="button">Board the plane</button>
+        <button id="shop-btn" class="secondary" type="button">Gear shop</button>
         <p id="best-line" class="best"></p>
       </div>
 
@@ -52,11 +59,20 @@
             faster and score points every second. Start the next trick right after the last one to build a combo.</li>
           <li><strong>Pull:</strong> press <kbd>Space</kbd> around 3,000 ft. Pull in the middle of a trick
             and you'll get line twists, or pull while head-down for a hard opening. Forget to pull and the AAD saves you, for a penalty.</li>
+          <li><strong>Wingsuit:</strong> <kbd>↑</kbd> flares (nose up: slower fall, but you lose speed),
+            <kbd>↓</kbd> dives (nose down: faster), <kbd>←</kbd>/<kbd>→</kbd> turn around. Flare too long and you'll stall.
+            Flare before you pull, or it's a hard opening.</li>
+          <li><strong>Ring course:</strong> fly through the gold rings in order. Every ring in a row raises your streak.
+            An arrow at the edge of the screen points to the next ring.</li>
+          <li><strong>Formation:</strong> fly into the glowing slot next to your friends and match their speed to dock.
+            Dive (<kbd>F</kbd>) to get down to them; tracking slows your fall a little.
+            At 5,500 ft, <em>break off</em>: track away so nobody is close when you pull.</li>
           <li><strong>Canopy:</strong> <kbd>←</kbd>/<kbd>→</kbd> to steer. Hold <kbd>↓</kbd> for brakes.
             Flare (hold <kbd>↓</kbd>) just before touchdown for a stand-up landing. Landing into the wind earns a bonus.
             For a <em>swoop</em>, turn around between 400 and 150 ft, then flare. Never turn below 150 ft: that's a hard landing.</li>
         </ol>
-        <p><kbd>Esc</kbd> returns to this menu. On a phone, use the on-screen buttons.</p>
+        <p>Every jump earns coins to spend in the <strong>gear shop</strong>. <kbd>M</kbd> mutes the sound.
+          <kbd>Esc</kbd> returns to this menu. On a phone, use the on-screen buttons.</p>
       </details>
     </div>
   </div>
@@ -71,9 +87,27 @@
       <div class="row">
         <button id="again-btn" class="big" type="button">Jump again</button>
         <button id="menu-btn" class="secondary" type="button">Change jump</button>
+        <button id="results-shop-btn" class="secondary" type="button">Gear shop</button>
       </div>
     </div>
   </div>
+
+  <!-- Gear shop -->
+  <div id="shop" class="overlay hidden">
+    <div class="panel">
+      <div class="shop-head">
+        <h1>Gear <span>shop</span></h1>
+        <p id="shop-coins" class="coins"></p>
+      </div>
+      <p class="tagline">Earn coins on every jump. Better gear changes how you fly.</p>
+      <div id="shop-sections"></div>
+      <div class="start-row">
+        <button id="shop-close" class="big" type="button">Back to the menu</button>
+      </div>
+    </div>
+  </div>
+
+  <button id="mute-btn" type="button" aria-label="Mute sound">🔊</button>
 
   <!-- On-screen buttons for phones and tablets -->
   <div id="touch" class="hidden">
@@ -93,5 +127,13 @@
   </div>
 
   <script src="game.js"></script>
+  <script src="audio.js"></script>
+  <script src="juice.js"></script>
+  <script src="wingsuit.js"></script>
+  <script src="rings.js"></script>
+  <script src="formation.js"></script>
+  <script src="weather.js"></script>
+  <script src="shop.js"></script>
+  <script src="main.js"></script>
 </body>
 </html>
