@@ -25,16 +25,31 @@
 // =====================================================================
 
 // Real skydives are slow: about a minute of freefall and several minutes
-// under the parachute. The game speeds time up so jumps stay snappy.
-const FREEFALL_SPEEDUP = 3;
-const CANOPY_SPEEDUP = 7;
+// under the parachute. "Arcade" speeds time up so jumps stay snappy;
+// "Real time" runs at true speed.
+const SPEEDUPS = {
+  arcade: { freefall: 3, canopy: 7 },
+  real: { freefall: 1, canopy: 1 },
+};
 
 // Distances are in feet, speeds in feet per second of *game* time.
-const TERMINAL_VELOCITY = 176 * FREEFALL_SPEEDUP; // ~120 mph belly-to-earth
-const TRACK_SPEED = 70 * FREEFALL_SPEEDUP;        // sideways speed when tracking
-const CANOPY_FORWARD = 25 * CANOPY_SPEEDUP;       // how fast the canopy flies forward
-const CANOPY_SINK = 16 * CANOPY_SPEEDUP;          // how fast you come down under canopy
-const EXIT_THROW = 0.6;                           // share of the plane's speed you keep on exit
+function makePhysics(speed) {
+  const s = SPEEDUPS[speed];
+  return {
+    freefallSpeedup: s.freefall,
+    canopySpeedup: s.canopy,
+    terminal: 176 * s.freefall,     // ~120 mph belly-to-earth
+    track: 70 * s.freefall,         // sideways speed when tracking
+    canopyForward: 25 * s.canopy,   // how fast the canopy flies forward
+    canopySink: 16 * s.canopy,      // how fast you come down under canopy
+    accelTau: 3.6 / s.freefall,     // it takes ~10 real seconds to reach full speed
+    perfectFlareTime: speed === 'real' ? 4 : 2.5, // flare for less than this before touchdown
+    flareCueAlt: speed === 'real' ? 40 : 150,     // when the FLARE! reminder shows
+  };
+}
+let phys = makePhysics('arcade');
+
+const EXIT_THROW = 0.6;          // share of the plane's speed you keep on exit
 
 const PULL_ALTITUDE = 3000;      // open your parachute around here
 const LOW_PULL_ALTITUDE = 2000;  // below this is a "low pull" (penalty)
@@ -42,9 +57,13 @@ const AAD_ALTITUDE = 1000;       // safety device opens the reserve for you
 const OPEN_TIME = 1.2;           // seconds for the canopy to inflate
 const TRICK_TIME = 0.9;          // seconds each trick takes
 const COMBO_WINDOW = 0.8;        // start the next trick within this to chain a combo
-const PERFECT_FLARE_TIME = 2.5;  // flare for less than this before touchdown
 const SPOT_ZONE = 800;           // how close to the ideal exit point counts as "green light"
 const FT_PER_SEC_TO_MPH = 0.6818;
+
+// Flying up yourself. A real climb to altitude takes 15+ minutes, so climbs
+// are always sped up, even in Real time mode.
+const CLIMB_BOOST = 4;
+const MIN_EXIT_ALTITUDE = 3500;  // lowest altitude you're allowed to jump from
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
 // Wind is in real-world feet per second. Its direction is random each jump.
@@ -57,7 +76,7 @@ const LOCATIONS = [
     skyTop: '#2f80d4', skyBottom: '#c4ecff', far: '#6cbfdf', hills: 0.5,
     ground: '#e8d39b', groundTop: '#f6e7bd', pad: null,
     decor: 'palm', decorHeight: [25, 45],
-    water: [[-100000, -1400]], seed: 11,
+    water: [[-100000, -1400]], runway: [300, 3300], seed: 11,
   },
   {
     id: 'farm', name: 'Farm Dropzone',
@@ -66,7 +85,7 @@ const LOCATIONS = [
     skyTop: '#3d85c6', skyBottom: '#dcefff', far: '#7fae6a', hills: 1,
     ground: '#6aa84f', groundTop: '#8cc56f', pad: '#86c96a',
     decor: 'tree', decorHeight: [30, 60],
-    water: [], seed: 23,
+    water: [], runway: [-3600, -600], seed: 23,
   },
   {
     id: 'desert', name: 'Desert Canyon',
@@ -75,7 +94,7 @@ const LOCATIONS = [
     skyTop: '#d8743a', skyBottom: '#ffe0a8', far: '#b5663c', hills: 1.6,
     ground: '#d9a86c', groundTop: '#e9c08a', pad: null,
     decor: 'cactus', decorHeight: [10, 28],
-    water: [], seed: 37,
+    water: [], runway: [-3600, -600], seed: 37,
   },
   {
     id: 'mountain', name: 'Mountain Lake',
@@ -84,7 +103,7 @@ const LOCATIONS = [
     skyTop: '#3a6fa8', skyBottom: '#d3e6f7', far: '#7d8fa8', hills: 3,
     ground: '#5b8c47', groundTop: '#79aa62', pad: null,
     decor: 'pine', decorHeight: [40, 90],
-    water: [[700, 2600]], seed: 41,
+    water: [[700, 2600]], runway: [-4200, -1200], seed: 41,
   },
   {
     id: 'city', name: 'City at Night',
@@ -93,7 +112,7 @@ const LOCATIONS = [
     skyTop: '#070b24', skyBottom: '#27305f', far: '#161b3a', hills: 1, skyline: true,
     ground: '#2e3139', groundTop: '#454a55', pad: '#3e6b3b',
     decor: 'building', decorHeight: [80, 320],
-    water: [], seed: 53,
+    water: [], runway: [-3600, -600], seed: 53,
   },
 ];
 
@@ -123,6 +142,16 @@ const AIRCRAFT = [
 const MODES = [
   { id: 'target', name: 'Target landing', blurb: 'Score points for tricks and for landing on the bullseye.' },
   { id: 'free', name: 'Free jump', blurb: 'No target. Just fly, flip, and land wherever you like.' },
+];
+
+const CLIMBS = [
+  { id: 'ride', name: 'Ride up', blurb: 'Start at jump altitude with the door open, ready to go.' },
+  { id: 'fly', name: 'Fly it up yourself', blurb: 'Take off from the runway and climb to altitude. You\'re the pilot!' },
+];
+
+const SPEEDS = [
+  { id: 'arcade', name: 'Arcade', blurb: 'Time is sped up so jumps stay snappy (about 20 s of freefall).' },
+  { id: 'real', name: 'Real time', blurb: 'As long as a real skydive: about a minute of freefall, then a few minutes under canopy.' },
 ];
 
 // dir: which way the jumper rotates. Flips turn head-over-heels, spins turn flat.
@@ -278,7 +307,7 @@ const held = {};             // actions being held down right now
 const pressed = new Set();   // actions that started this frame
 let touchMode = window.matchMedia('(pointer: coarse)').matches;
 
-const isPlaying = () => ['plane', 'freefall', 'canopy'].includes(game.phase);
+const isPlaying = () => ['plane', 'pilot', 'freefall', 'canopy'].includes(game.phase);
 
 window.addEventListener('keydown', e => {
   const action = KEYMAP[e.code];
@@ -341,10 +370,12 @@ window.addEventListener('touchstart', () => {
 // =====================================================================
 
 const game = {
-  phase: 'menu', // 'menu' | 'plane' | 'freefall' | 'canopy' | 'landed'
+  phase: 'menu', // 'menu' | 'plane' | 'pilot' | 'freefall' | 'canopy' | 'landed'
   location: LOCATIONS[0],
   aircraft: AIRCRAFT[1],
   mode: 'target',
+  climb: 'ride',   // 'ride' starts at altitude, 'fly' means you pilot it up
+  speed: 'arcade', // 'arcade' or 'real'
   time: 0,
   wind: 0,        // real ft/s; positive blows to the right
   targetX: 0,
@@ -394,8 +425,9 @@ function makeScenery(loc) {
     const h = lerp(loc.decorHeight[0], loc.decorHeight[1], rand());
     const w = loc.decor === 'building' ? 60 + rand() * 100 : h;
     const seed = rand();
-    // Keep the landing area and the water clear.
-    if (Math.abs(x) < 300 || inWater(loc, x)) continue;
+    // Keep the landing area, the runway and the water clear.
+    const onRunway = x > loc.runway[0] - 150 && x < loc.runway[1] + 150;
+    if (Math.abs(x) < 300 || onRunway || inWater(loc, x)) continue;
     decor.push({ x, h, w, seed });
   }
   const clouds = [];
@@ -421,28 +453,67 @@ function windNow() {
 // Where should you leave the plane? The wind will carry you while you fall,
 // so the ideal exit point is upwind of the target. Real skydivers call
 // this "spotting".
-function computeIdealExit() {
-  const ac = game.aircraft;
-  const freefallTime = (ac.altitude - PULL_ALTITUDE) / TERMINAL_VELOCITY + 1.5;
-  const canopyTime = PULL_ALTITUDE / CANOPY_SINK;
-  const drift = game.wind * FREEFALL_SPEEDUP * freefallTime + game.wind * CANOPY_SPEEDUP * canopyTime;
-  const exitThrow = ac.speed * EXIT_THROW * 0.8;
+// `alt` is the exit altitude and `groundSpeed` the plane's speed (negative
+// when it's flying left), since both change when you're the pilot.
+function computeIdealExit(alt = game.aircraft.altitude, groundSpeed = game.aircraft.speed) {
+  const freefallTime = Math.max(0, alt - PULL_ALTITUDE) / phys.terminal + phys.accelTau * 1.25;
+  const canopyTime = PULL_ALTITUDE / phys.canopySink;
+  const drift = game.wind * phys.freefallSpeedup * freefallTime + game.wind * phys.canopySpeedup * canopyTime;
+  const exitThrow = groundSpeed * EXIT_THROW * 0.8;
   return game.targetX - drift - exitThrow;
+}
+
+// Everything the plane (or balloon) needs, whether it's on autopilot or you're flying it.
+function makePlane(fields) {
+  return {
+    x: 0, alt: 0, vx: 0,
+    speed: 0,        // airspeed
+    pitch: 0,        // nose angle: positive is nose up
+    dir: 1,          // 1 flying right, -1 flying left
+    turnVis: 1,      // smoothly goes from 1 to -1 while turning around
+    throttle: 0,
+    onGround: false,
+    stalled: false,
+    leveled: false,  // reached jump altitude
+    heat: 0,         // balloon burner heat
+    climb: 0,        // balloon climb rate
+    burning: false,
+    ...fields,
+  };
 }
 
 function resetPlane() {
   const ac = game.aircraft;
   if (ac.kind === 'balloon') {
     const dir = Math.sign(game.wind) || 1;
-    game.plane = { x: game.idealExit - 200 * dir, alt: ac.altitude, vx: game.wind * FREEFALL_SPEEDUP };
+    game.plane = makePlane({ x: game.idealExit - 200 * dir, alt: ac.altitude, vx: game.wind * phys.freefallSpeedup });
   } else {
-    game.plane = { x: game.idealExit - 3500, alt: ac.altitude, vx: ac.speed };
+    game.plane = makePlane({ x: game.idealExit - 3500, alt: ac.altitude, vx: ac.speed, speed: ac.speed });
+  }
+}
+
+// Fly-it-up mode: the plane waits at the start of the runway. The balloon
+// launches from a field upwind, so the wind carries it toward the spot.
+function resetPilot() {
+  const ac = game.aircraft;
+  const loc = game.location;
+  if (ac.kind === 'balloon') {
+    const dir = Math.sign(game.wind) || 1;
+    let x = computeIdealExit(ac.altitude, 0) - dir * 900;
+    // Don't launch from the water: move toward the landing area until it's dry land.
+    while (inWater(loc, x)) x += x < 0 ? 100 : -100;
+    if (Math.abs(x) < 400) x = -dir * 400;
+    game.plane = makePlane({ x, onGround: true });
+  } else {
+    game.plane = makePlane({ x: loc.runway[0] + 150, onGround: true });
   }
 }
 
 function startJump() {
   const ac = game.aircraft;
-  game.phase = 'plane';
+  const flying = game.climb === 'fly';
+  phys = makePhysics(game.speed);
+  game.phase = flying ? 'pilot' : 'plane';
   game.time = 0;
   const dir = Math.random() < 0.5 ? -1 : 1;
   game.wind = dir * game.location.wind * (0.75 + Math.random() * 0.5);
@@ -459,17 +530,24 @@ function startJump() {
   game.landedTime = 0;
   game.resultsShown = false;
   game.result = null;
-  resetPlane();
+  if (flying) resetPilot();
+  else resetPlane();
   game.cam.x = game.plane.x;
   game.cam.alt = game.plane.alt;
-  game.cam.scale = 0.35;
+  game.cam.scale = flying ? 1.4 : 0.35;
 
   pressed.clear();
   for (const k in held) held[k] = false;
   ui.menu.classList.add('hidden');
   ui.results.classList.add('hidden');
   updateTouchVisibility();
-  popup(ac.kind === 'balloon' ? 'Floating at 7,000 ft. Jump whenever you like' : 'Wait for the green light, then JUMP', '#fff');
+  let hello = ac.kind === 'balloon' ? 'Floating at 7,000 ft. Jump whenever you like' : 'Wait for the green light, then JUMP';
+  if (flying) {
+    hello = ac.kind === 'balloon'
+      ? `Hold ${touchMode ? '▲' : '↑'} to fire the burner and lift off`
+      : `${touchMode ? 'Tap GO' : 'Press Space'} for full power, then hold ${touchMode ? '▲' : '↑'} to take off`;
+  }
+  popup(hello, '#fff');
 }
 
 function popup(text, color) {
@@ -485,12 +563,13 @@ function update(dt) {
   game.time += dt;
 
   if (game.phase === 'plane') updatePlane(dt);
+  else if (game.phase === 'pilot') updatePilot(dt);
   else if (game.phase === 'freefall') updateFreefall(dt);
   else if (game.phase === 'canopy') updateCanopy(dt);
   else if (game.phase === 'landed') updateLanded(dt);
 
   // The plane keeps flying after you leave it.
-  if (game.phase !== 'menu' && game.phase !== 'plane') game.plane.x += game.plane.vx * dt;
+  if (!['menu', 'plane', 'pilot'].includes(game.phase)) game.plane.x += game.plane.vx * dt;
 
   for (const p of game.popups) p.age += dt;
   game.popups = game.popups.filter(p => p.age < 2.2);
@@ -517,6 +596,130 @@ function updatePlane(dt) {
   }
 }
 
+// ---------- Flying it up yourself ----------
+
+function updatePilot(dt) {
+  if (game.aircraft.kind === 'balloon') updateBalloonPilot(dt);
+  else updatePlanePilot(dt);
+
+  const p = game.plane;
+  // The best exit point moves as you climb and turn, so keep recalculating it.
+  game.idealExit = computeIdealExit(Math.max(p.alt, MIN_EXIT_ALTITUDE), p.vx);
+
+  if (p.alt >= game.aircraft.altitude - 1 && !p.leveled) {
+    p.leveled = true;
+    popup('Jump altitude! Head for the green light', '#7ee2a8');
+  }
+}
+
+function tryPilotJump() {
+  if (game.plane.alt >= MIN_EXIT_ALTITUDE) exitPlane();
+  else popup(`Too low to jump! Climb above ${fmt(MIN_EXIT_ALTITUDE)} ft`, '#ffb347');
+}
+
+function updatePlanePilot(dt) {
+  const p = game.plane;
+  const ac = game.aircraft;
+  const wasFlying = !p.onGround;
+  const rotateSpeed = ac.speed * 0.45; // fast enough to lift off
+  const stallSpeed = ac.speed * 0.4;   // slower than this and the wings stop flying
+
+  if (pressed.has('action')) {
+    if (p.onGround && p.throttle === 0) {
+      p.throttle = 1;
+      popup(`Full power! Hold ${touchMode ? '▲' : '↑'} to lift off at takeoff speed`, '#fff');
+    } else if (!p.onGround) {
+      tryPilotJump();
+      if (game.phase !== 'pilot') return;
+    }
+  }
+
+  // Nose up / nose down
+  const pitchInput = (held.up ? 1 : 0) - (held.down ? 1 : 0);
+  if (p.onGround) {
+    // On the runway you can only lift the nose once you're fast enough.
+    p.pitch = p.speed >= rotateSpeed ? clamp(p.pitch + pitchInput * 0.6 * dt, 0, 0.25) : 0;
+    p.speed = Math.min(p.speed + 45 * p.throttle * dt, ac.speed * 0.9);
+  } else {
+    if (p.stalled) {
+      // In a stall the nose drops by itself until you have speed again.
+      p.pitch = approach(p.pitch, -0.35, dt * 1.2);
+      if (p.speed > stallSpeed * 1.3) {
+        p.stalled = false;
+        popup('Recovered! Nice flying', '#8ef');
+      }
+    } else {
+      p.pitch = clamp(p.pitch + pitchInput * 0.6 * dt, -0.4, 0.75);
+    }
+    // Climbing steeply bleeds off speed; diving builds it up.
+    p.speed += ((ac.speed * p.throttle - p.speed) * 0.35 - 120 * Math.sin(p.pitch)) * dt;
+    p.speed = clamp(p.speed, 0, ac.speed * 1.4);
+    if (!p.stalled && p.speed < stallSpeed) {
+      p.stalled = true; // the big STALL! warning in the HUD tells the player
+    }
+  }
+
+  // Turning around (only in the air)
+  const turnInput = (held.right ? 1 : 0) - (held.left ? 1 : 0);
+  if (!p.onGround && turnInput !== 0 && turnInput !== p.dir) p.dir = turnInput;
+  p.turnVis = approach(p.turnVis, p.dir, dt * 1.3);
+
+  p.vx = p.speed * Math.cos(p.pitch) * p.turnVis;
+  let climb = p.onGround ? 0 : p.speed * Math.sin(p.pitch) * CLIMB_BOOST;
+  if (p.alt >= ac.altitude && climb > 0) {
+    // At jump altitude the autopilot holds you level.
+    climb = 0;
+    p.pitch = approach(p.pitch, 0, dt * 0.8);
+  }
+  p.x += p.vx * dt;
+  p.alt = Math.min(ac.altitude, p.alt + climb * dt);
+
+  if (p.onGround && p.pitch > 0.05) {
+    p.onGround = false;
+    popup('Liftoff! Climb to altitude', '#7ee2a8');
+  }
+  if (wasFlying && p.alt <= 0) {
+    if (-climb > 90 || p.pitch < -0.15) {
+      popup('Hard landing! The plane bounced back to the runway', '#ff6b6b');
+      resetPilot();
+      return;
+    }
+    p.alt = 0;
+    p.pitch = 0;
+    p.onGround = true;
+  }
+  const [, runwayEnd] = game.location.runway;
+  if (p.onGround && p.throttle > 0 && p.x > runwayEnd) {
+    popup('Ran off the end of the runway! Lift off sooner', '#ff6b6b');
+    resetPilot();
+  }
+}
+
+function updateBalloonPilot(dt) {
+  const p = game.plane;
+  const ac = game.aircraft;
+  if (pressed.has('action')) {
+    tryPilotJump();
+    if (game.phase !== 'pilot') return;
+  }
+  // Fire the burner to heat the air: hot air rises, cooling air sinks.
+  p.burning = !!held.up;
+  p.heat = clamp(p.heat + (p.burning ? 0.45 : -0.07) * dt, 0, 1);
+  p.climb += ((p.heat - 0.35) * 420 - p.climb) * ease(dt, 1.5);
+  p.alt += p.climb * dt;
+  if (p.alt <= 0) {
+    p.alt = 0;
+    p.climb = Math.max(0, p.climb);
+  }
+  if (p.alt >= ac.altitude) {
+    p.alt = ac.altitude;
+    p.climb = Math.min(0, p.climb);
+  }
+  p.onGround = p.alt <= 0;
+  p.vx = p.onGround ? 0 : windNow() * CLIMB_BOOST;
+  p.x += p.vx * dt;
+}
+
 function exitPlane() {
   const p = game.plane;
   const j = game.jumper;
@@ -524,7 +727,9 @@ function exitPlane() {
   j.alt = p.alt - 15;
   j.vx = p.vx * EXIT_THROW;
   j.vy = 0;
-  j.faceDir = 1;
+  j.faceDir = Math.sign(p.vx) || 1;
+  p.pitch = 0;
+  p.burning = false;
   game.phase = 'freefall';
   const goodSpot = Math.abs(p.x - game.idealExit) < SPOT_ZONE;
   popup(goodSpot ? 'Great spot! Arch!' : 'Exit! Arch!', '#fff');
@@ -532,17 +737,17 @@ function exitPlane() {
 
 function updateFreefall(dt) {
   const j = game.jumper;
-  const wind = windNow() * FREEFALL_SPEEDUP;
+  const wind = windNow() * phys.freefallSpeedup;
 
   // Gravity speeds you up until air resistance balances it (terminal velocity).
-  j.vy += (TERMINAL_VELOCITY - j.vy) * ease(dt, 1.2);
+  j.vy += (phys.terminal - j.vy) * ease(dt, phys.accelTau);
 
   // Tracking: flying your body sideways across the sky.
   let input = (held.right ? 1 : 0) - (held.left ? 1 : 0);
   if (j.trick) input = 0;
   j.tracking = approach(j.tracking, input, dt * 4);
   if (Math.abs(j.tracking) > 0.3 && !j.trick) j.faceDir = Math.sign(j.tracking);
-  const targetVx = wind + j.tracking * TRACK_SPEED;
+  const targetVx = wind + j.tracking * phys.track;
   j.vx += (targetVx - j.vx) * ease(dt, 0.8);
 
   j.x += j.vx * dt;
@@ -627,7 +832,7 @@ function deploy(byAAD) {
 
 function updateCanopy(dt) {
   const j = game.jumper;
-  const wind = windNow() * CANOPY_SPEEDUP;
+  const wind = windNow() * phys.canopySpeedup;
   j.openT += dt;
   const open = clamp(j.openT / OPEN_TIME, 0, 1);
 
@@ -648,8 +853,8 @@ function updateCanopy(dt) {
   j.brakeHeld = braking ? j.brakeHeld + dt : 0;
 
   const turning = 1 + 0.5 * (1 - Math.abs(j.heading)); // turns make you sink faster
-  const forward = CANOPY_FORWARD * (1 - 0.65 * j.brake);
-  const sink = CANOPY_SINK * (1 - 0.45 * j.brake) * turning;
+  const forward = phys.canopyForward * (1 - 0.65 * j.brake);
+  const sink = phys.canopySink * (1 - 0.45 * j.brake) * turning;
 
   j.vy += (sink - j.vy) * ease(dt, 0.35);
   j.vx += (j.heading * forward * open + wind - j.vx) * ease(dt, 0.5);
@@ -670,6 +875,10 @@ function land() {
   if (s.trickCount > 0) {
     items.push({ label: `Freefall tricks (${s.trickCount}, best combo ×${s.bestCombo})`, pts: s.tricks });
   }
+  if (game.climb === 'fly') {
+    const label = game.aircraft.kind === 'balloon' ? 'Piloted the balloon up yourself' : 'Flew the plane up yourself';
+    items.push({ label, pts: 200 });
+  }
   items.push(...s.items);
 
   if (inWater(game.location, j.x)) {
@@ -683,7 +892,7 @@ function land() {
       else items.push({ label: `Missed the target by ${fmt(dist)} ft`, pts: 0 });
     }
 
-    if (j.brake > 0.6 && j.brakeHeld < PERFECT_FLARE_TIME) {
+    if (j.brake > 0.6 && j.brakeHeld < phys.perfectFlareTime) {
       j.landStyle = 'stand';
       items.push({ label: 'Perfect flare: stand-up landing!', pts: 300 });
     } else if (j.brake > 0.6) {
@@ -735,6 +944,10 @@ function updateCamera(dt) {
     focusX = game.plane.x;
     focusAlt = game.plane.alt;
     targetScale = 0.35;
+  } else if (game.phase === 'pilot') {
+    focusX = game.plane.x;
+    focusAlt = game.plane.alt;
+    targetScale = clamp(420 / (focusAlt + 150), 0.3, 1.4);
   } else {
     focusX = game.jumper.x;
     focusAlt = game.jumper.alt;
@@ -779,7 +992,7 @@ function draw() {
   drawGround(loc);
   if (game.phase !== 'menu') {
     drawAircraft();
-    if (game.phase !== 'plane') drawJumper();
+    if (game.phase !== 'plane' && game.phase !== 'pilot') drawJumper();
   }
   for (const c of game.scenery.clouds) if (c.front) drawCloud(c, loc, 0.55);
   if (game.phase === 'freefall') drawStreaks();
@@ -874,6 +1087,8 @@ function drawGround(loc) {
     ctx.fillRect(a, gy, b - a, Math.max(2, 3 * scale));
   }
 
+  drawRunway(loc, gy);
+
   ctx.fillStyle = loc.groundTop;
   ctx.globalAlpha = 0.6;
   ctx.fillRect(0, gy, W, Math.max(2, 4 * scale));
@@ -890,6 +1105,25 @@ function drawGround(loc) {
 
   if (game.mode === 'target') drawTarget(gy);
   drawWindsock(gy);
+}
+
+function drawRunway(loc, gy) {
+  const scale = game.cam.scale;
+  const [from, to] = loc.runway;
+  const a = toScreen(from, 0).x;
+  const b = toScreen(to, 0).x;
+  if (b < 0 || a > W) return;
+  const h = Math.max(3, 7 * scale);
+  ctx.fillStyle = loc.night ? '#26292f' : '#50555e';
+  ctx.fillRect(a, gy, b - a, h);
+  if (scale < 0.25) return;
+  // Dashed centerline
+  ctx.fillStyle = '#e8e8e8';
+  for (let x = from + 60; x < to - 60; x += 120) {
+    const sx = toScreen(x, 0).x;
+    if (sx < -60 || sx > W + 60) continue;
+    ctx.fillRect(sx, gy + h * 0.4, 50 * scale, Math.max(1, h * 0.2));
+  }
 }
 
 function drawDecor(loc, x, y, h, w, d) {
@@ -1022,18 +1256,44 @@ function drawWindsock(gy) {
 
 function drawAircraft() {
   const ac = game.aircraft;
-  const p = toScreen(game.plane.x, game.plane.alt);
+  const plane = game.plane;
+  const p = toScreen(plane.x, plane.alt);
   if (p.x < -200 || p.x > W + 200 || p.y < -60 || p.y > H + 250) return;
   ctx.save();
   ctx.translate(p.x, p.y);
   ctx.scale(ac.size, ac.size);
-  if (ac.kind === 'balloon') drawBalloon(ac);
-  else drawPlane(ac);
+  if (ac.kind === 'balloon') {
+    ctx.translate(0, -10); // so the basket sits on the ground
+    drawBalloon(ac);
+  } else {
+    ctx.translate(0, -12); // so the wheels sit on the ground
+    // Squash through zero while turning around, then face the new way.
+    const tv = plane.turnVis;
+    ctx.scale(Math.sign(tv || 1) * Math.max(0.15, Math.abs(tv)), 1);
+    ctx.rotate(-plane.pitch);
+    drawPlane(ac);
+  }
   ctx.restore();
 }
 
 function drawPlane(ac) {
   const boxy = ac.style === 'skyvan';
+
+  // Landing gear
+  ctx.strokeStyle = '#3a3f48';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-8, 6);
+  ctx.lineTo(-10, 10);
+  ctx.moveTo(30, 5);
+  ctx.lineTo(31, 10);
+  ctx.stroke();
+  ctx.fillStyle = '#1d1f24';
+  for (const wx of [-10, 31]) {
+    ctx.beginPath();
+    ctx.arc(wx, 10, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Tail fin
   ctx.fillStyle = ac.color;
@@ -1124,10 +1384,13 @@ function drawBalloon(ac) {
   roundRect(-10, -4, 20, 14, 3);
   ctx.fill();
 
-  if (Math.sin(game.time * 9) > 0.3) {
-    ctx.fillStyle = '#ffb703';
+  // Burner flame: a big roar when you're firing it, a pilot light otherwise.
+  const roaring = game.plane.burning;
+  if (roaring || Math.sin(game.time * 9) > 0.3) {
+    const flicker = roaring ? 1.6 + Math.sin(game.time * 40) * 0.3 : 1;
+    ctx.fillStyle = roaring ? '#ff8c1a' : '#ffb703';
     ctx.beginPath();
-    ctx.ellipse(0, -30, 3, 6, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, -30 - 3 * flicker, 3 * flicker, 6 * flicker, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -1320,7 +1583,7 @@ function drawLandedJumper(j) {
 }
 
 function drawStreaks() {
-  const a = 0.25 * (game.jumper.vy / TERMINAL_VELOCITY);
+  const a = 0.25 * (game.jumper.vy / phys.terminal);
   ctx.strokeStyle = `rgba(255, 255, 255, ${a})`;
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -1348,7 +1611,11 @@ function currentScore() {
 function drawHud() {
   const j = game.jumper;
   const phase = game.phase;
-  const alt = phase === 'plane' ? game.plane.alt : j.alt;
+  const plane = game.plane;
+  const inAircraft = phase === 'plane' || phase === 'pilot';
+  const alt = inAircraft ? plane.alt : j.alt;
+  const isBalloon = game.aircraft.kind === 'balloon';
+  const stallSpeed = game.aircraft.speed * 0.4;
   const panelW = Math.min(200, (W - 48) / 2);
   const bottomInset = touchMode && isPlaying() ? 170 : 0;
   const flash = Math.sin(game.time * 12) > 0;
@@ -1366,9 +1633,14 @@ function drawHud() {
   fitFont(`${fmt(alt)} ft`, 750, 26, panelW - 24);
   ctx.fillText(`${fmt(alt)} ft`, 28, 66);
   let sub = game.aircraft.name;
-  if (phase === 'freefall') sub = `Fall rate ${fmt((j.vy / FREEFALL_SPEEDUP) * FT_PER_SEC_TO_MPH)} mph`;
-  if (phase === 'canopy') sub = `Descent ${fmt((j.vy / CANOPY_SPEEDUP) * FT_PER_SEC_TO_MPH)} mph`;
+  if (phase === 'freefall') sub = `Fall rate ${fmt((j.vy / phys.freefallSpeedup) * FT_PER_SEC_TO_MPH)} mph`;
+  if (phase === 'canopy') sub = `Descent ${fmt((j.vy / phys.canopySpeedup) * FT_PER_SEC_TO_MPH)} mph`;
   if (phase === 'landed') sub = 'On the ground';
+  if (phase === 'pilot') {
+    if (isBalloon) sub = `Burner heat ${Math.round(plane.heat * 100)}%`;
+    else if (plane.onGround && plane.throttle === 0) sub = 'Engine idling';
+    else sub = `Airspeed ${fmt(plane.speed * FT_PER_SEC_TO_MPH)} mph`;
+  }
   ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
   fitFont(sub, 500, 12, panelW - 24);
   ctx.fillText(sub, 28, 86);
@@ -1403,28 +1675,49 @@ function drawHud() {
   // Big warnings in the middle of the screen
   ctx.textAlign = 'center';
   let warning = null;
-  if (phase === 'freefall' && alt < PULL_ALTITUDE + 300) warning = flash ? (touchMode ? 'PULL!' : 'PULL! (Space)') : null;
+  let warningColor = phase === 'canopy' ? '#8ef' : '#ff6b6b';
+  const up = touchMode ? '▲' : '↑';
+  const down = touchMode ? '▼' : '↓';
+  if (phase === 'pilot' && !isBalloon) {
+    if (plane.stalled) warning = flash ? `STALL! Nose down ${down}` : null;
+    else if (!plane.onGround && plane.speed < stallSpeed * 1.2) warning = 'Low airspeed! Ease the nose down';
+    else if (plane.onGround && plane.speed >= game.aircraft.speed * 0.45) {
+      warning = `Takeoff speed! Hold ${up}`;
+      warningColor = '#8ef';
+    }
+  } else if (phase === 'freefall' && alt < PULL_ALTITUDE + 300) warning = flash ? (touchMode ? 'PULL!' : 'PULL! (Space)') : null;
   else if (phase === 'freefall' && alt < PULL_ALTITUDE + 1500) warning = 'Get ready to pull…';
-  else if (phase === 'canopy' && alt < 150) warning = flash ? (touchMode ? 'FLARE! Hold ▼' : 'FLARE! Hold ↓') : null;
+  else if (phase === 'canopy' && alt < phys.flareCueAlt) warning = flash ? (touchMode ? 'FLARE! Hold ▼' : 'FLARE! Hold ↓') : null;
   if (warning) {
     fitFont(warning, 800, 30, W - 32);
     ctx.lineWidth = 5;
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
     ctx.strokeText(warning, W / 2, H * 0.68 - bottomInset / 2);
-    ctx.fillStyle = phase === 'canopy' ? '#8ef' : '#ff6b6b';
+    ctx.fillStyle = warningColor;
     ctx.fillText(warning, W / 2, H * 0.68 - bottomInset / 2);
   }
 
-  if (phase === 'plane') drawSpotMeter(bottomInset);
+  if (phase === 'plane' || (phase === 'pilot' && !plane.onGround)) drawSpotMeter(bottomInset);
 
   // Control hints along the bottom
+  let hintKey = phase;
+  if (phase === 'pilot') {
+    if (isBalloon) hintKey = 'balloon';
+    else if (plane.onGround && plane.throttle === 0) hintKey = 'runway';
+    else if (plane.onGround) hintKey = 'rolling';
+    else hintKey = 'flying';
+  }
   const hints = {
+    runway: ['Space: full power  ·  then hold ↑ to lift off', 'Tap GO for full power, then hold ▲ to lift off'],
+    rolling: ['Hold ↑ to lift off once you reach takeoff speed', 'Hold ▲ to lift off at takeoff speed'],
+    flying: ['↑/↓ nose up/down  ·  ←/→ turn around  ·  Space: JUMP (above 3,500 ft)', '▲▼ nose · ◀▶ turn · JUMP above 3,500 ft'],
+    balloon: ['Hold ↑ to fire the burner  ·  Space: JUMP (above 3,500 ft)', 'Hold ▲ for the burner · JUMP above 3,500 ft'],
     plane: ['Space or click: JUMP. Wait for the green light', 'Tap JUMP when the light is green'],
     freefall: ['←/→ track  ·  ↑ backflip  ·  ↓ front flip  ·  Q/E spin  ·  Space: PULL', '▲▼ flips · ⟲⟳ spins · PULL before 3,000 ft'],
     canopy: ['←/→ steer  ·  hold ↓ for brakes. Flare just before you land', '◀ ▶ steer · hold ▼ to flare just before landing'],
   };
-  if (hints[phase]) {
-    const text = hints[phase][touchMode ? 1 : 0];
+  if (hints[hintKey]) {
+    const text = hints[hintKey][touchMode ? 1 : 0];
     fitFont(text, 500, 13, W - 48);
     const tw = ctx.measureText(text).width + 24;
     const y = H - 20 - bottomInset;
@@ -1477,12 +1770,25 @@ function drawSpotMeter(bottomInset) {
   const offset = game.plane.x - game.idealExit;
   const green = Math.abs(offset) < SPOT_ZONE;
   const past = offset * Math.sign(game.plane.vx || 1) > SPOT_ZONE;
+  let status = green ? '● GREEN LIGHT: JUMP!' : past ? '● Past the spot. Jump now or wait for a go-around' : '● Red light: not yet…';
+  let statusColor = green ? '#7ee2a8' : '#ff8a8a';
+  if (game.phase === 'pilot') {
+    // You're the pilot, so tell them how to get to the spot.
+    const toSpot = game.idealExit - game.plane.x;
+    const ahead = Math.sign(toSpot) === Math.sign(game.plane.vx || 1) || game.aircraft.kind === 'balloon';
+    if (game.plane.alt < MIN_EXIT_ALTITUDE) {
+      status = `Climb above ${fmt(MIN_EXIT_ALTITUDE)} ft to jump`;
+      statusColor = '#ffffff';
+    } else if (!green) {
+      status = ahead ? `● Red light: spot is ${fmt(Math.abs(toSpot))} ft ahead`
+        : `● Spot is ${fmt(Math.abs(toSpot))} ft behind you. Turn around!`;
+    }
+  }
 
   hudPanel(x - 10, y - 38, w + 20, 62);
   ctx.textAlign = 'center';
   ctx.font = `700 14px ${FONT}`;
-  ctx.fillStyle = green ? '#7ee2a8' : '#ff8a8a';
-  const status = green ? '● GREEN LIGHT: JUMP!' : past ? '● Past the spot. Jump now or wait for a go-around' : '● Red light: not yet…';
+  ctx.fillStyle = statusColor;
   fitFont(status, 700, 14, w);
   ctx.fillText(status, W / 2, y - 16);
 
@@ -1522,6 +1828,8 @@ const ui = {
   locations: $('#location-list'),
   aircraft: $('#aircraft-list'),
   modes: $('#mode-list'),
+  climbs: $('#climb-list'),
+  speeds: $('#speed-list'),
   start: $('#start-btn'),
   best: $('#best-line'),
   resultsTitle: $('#results-title'),
@@ -1564,9 +1872,14 @@ function refreshMenu() {
   mark(ui.locations, game.location.id);
   mark(ui.aircraft, game.aircraft.id);
   mark(ui.modes, game.mode);
+  mark(ui.climbs, game.climb);
+  mark(ui.speeds, game.speed);
   const best = storage.get(`r88-best-${game.location.id}-${game.mode}`, null);
   ui.best.textContent = best === null ? 'No jumps here yet' : `Your best here: ${fmt(best)} points`;
-  storage.set('r88-prefs', { location: game.location.id, aircraft: game.aircraft.id, mode: game.mode });
+  storage.set('r88-prefs', {
+    location: game.location.id, aircraft: game.aircraft.id, mode: game.mode,
+    climb: game.climb, speed: game.speed,
+  });
 }
 
 function showMenu() {
@@ -1610,12 +1923,11 @@ function updateTouchVisibility() {
   ui.touch.classList.toggle('hidden', !(touchMode && isPlaying()));
 }
 
-let lastLabelPhase = null;
 function syncTouchLabels() {
-  if (game.phase === lastLabelPhase) return;
-  lastLabelPhase = game.phase;
-  const label = { plane: 'JUMP', freefall: 'PULL', canopy: '—' }[game.phase];
-  if (label) ui.actionBtn.textContent = label;
+  let label = { plane: 'JUMP', pilot: 'JUMP', freefall: 'PULL', canopy: '—' }[game.phase];
+  const p = game.plane;
+  if (game.phase === 'pilot' && game.aircraft.kind !== 'balloon' && p.onGround && p.throttle === 0) label = 'GO';
+  if (label && ui.actionBtn.textContent !== label) ui.actionBtn.textContent = label;
 }
 
 ui.start.addEventListener('click', startJump);
@@ -1630,6 +1942,8 @@ const prefs = storage.get('r88-prefs', {});
 game.location = LOCATIONS.find(l => l.id === prefs.location) || LOCATIONS[0];
 game.aircraft = AIRCRAFT.find(a => a.id === prefs.aircraft) || AIRCRAFT[1];
 game.mode = MODES.some(m => m.id === prefs.mode) ? prefs.mode : 'target';
+game.climb = CLIMBS.some(c => c.id === prefs.climb) ? prefs.climb : 'ride';
+game.speed = SPEEDS.some(s => s.id === prefs.speed) ? prefs.speed : 'arcade';
 
 renderChoices(ui.locations, LOCATIONS, item => {
   game.location = item;
@@ -1637,6 +1951,8 @@ renderChoices(ui.locations, LOCATIONS, item => {
 });
 renderChoices(ui.aircraft, AIRCRAFT, item => { game.aircraft = item; });
 renderChoices(ui.modes, MODES, item => { game.mode = item.id; });
+renderChoices(ui.climbs, CLIMBS, item => { game.climb = item.id; });
+renderChoices(ui.speeds, SPEEDS, item => { game.speed = item.id; });
 showMenu();
 
 // The game loop: update, draw, repeat, about 60 times per second.
