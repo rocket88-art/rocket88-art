@@ -207,7 +207,7 @@ kbd {
 .dpad [data-action="left"] { grid-column: 1; grid-row: 2; }
 .dpad [data-action="down"] { grid-column: 2; grid-row: 2; }
 .dpad [data-action="right"] { grid-column: 3; grid-row: 2; }
-.actions { grid-template-columns: repeat(2, 64px); grid-template-rows: 52px 64px; }
+.actions { grid-template-columns: repeat(2, 64px); grid-template-rows: 52px 52px 64px; }
 .actions [data-action="action"] { grid-column: 1 / span 2; }
 
 .tbtn {
@@ -224,3 +224,4 @@ kbd {
 }
 .tbtn.down { background: rgba(255, 122, 26, 0.6); }
 .tbtn.act { background: var(--accent); color: #1a0d00; }
+.tbtn.small { font-size: 13px; letter-spacing: 0.04em; }

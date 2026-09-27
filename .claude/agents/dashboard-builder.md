@@ -40,7 +40,8 @@ Two files:
 - `.dashboard/index.html`: the page. Build it once per task.
 - `.dashboard/state.js`: the data. The main session edits it after every step.
 
-`state.js` must use this shape:
+`state.js` must be `window.DASHBOARD = ` followed by strict JSON (double-quoted keys, no
+comments, no trailing commas) and a `;`, so scripts can read and update it. Use this shape:
 
     window.DASHBOARD = {
       task: "…", goal: "…",
@@ -49,8 +50,10 @@ Two files:
       questions: [{ question, default, askedAt, answered: false }],
       deliverables: [{ title, where, at }],
       stuck: [{ what, since, tried }],
-      extra: {}   // data for any custom panels you add
+      extra: {}
     };
+
+(`extra` holds data for any custom panels you add.)
 
 ## Panels
 

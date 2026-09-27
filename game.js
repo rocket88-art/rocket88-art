@@ -160,7 +160,12 @@ const TRICKS = {
   frontflip: { name: 'Front flip', points: 100, kind: 'flip', dir: 1 },
   spinLeft: { name: 'Left 360', points: 75, kind: 'spin', dir: -1 },
   spinRight: { name: 'Right 360', points: 75, kind: 'spin', dir: 1 },
+  barrelRoll: { name: 'Barrel roll', points: 125, kind: 'roll', dir: 1 },
 };
+const DOUBLE_FLIP_POINTS = 250;   // press the same flip key again mid-flip
+const DIVE_POINTS_PER_SEC = 40;   // head-down dive, per second of diving
+const DIVE_SPEEDUP = 1.35;        // head-down falls ~35% faster (~160 mph)
+const SWOOP_TURN_ALT = [150, 400]; // turn around in this band, then flare, for a swoop
 
 // Landing target rings, smallest first. Radius is in feet.
 const RINGS = [
@@ -299,6 +304,8 @@ const KEYMAP = {
   ArrowDown: 'down', KeyS: 'down',
   KeyQ: 'spinL', KeyZ: 'spinL',
   KeyE: 'spinR', KeyX: 'spinR',
+  KeyR: 'roll',
+  KeyF: 'dive',
   Space: 'action', Enter: 'action',
   Escape: 'menu',
 };
@@ -408,6 +415,12 @@ function newJumper() {
     faceDir: 1,
     tracking: 0,         // -1..1, how hard you're tracking sideways
     trick: null, trickT: 0,
+    turns: 1,            // 2 for a double flip
+    roll: 0,             // barrel roll rotation
+    headDown: 0,         // 0 belly-down ... 1 fully head-down
+    diveTime: 0,         // seconds spent head-down in the current dive
+    turnStartAlt: null,  // canopy: altitude where your last turn-around started
+    swoop: 0,            // canopy: extra speed from a low turn
     heading: 1,          // canopy: -1 flying left ... 1 flying right
     facing: 1,           // canopy: the direction you're steering toward
     turnRate: 0,
@@ -739,12 +752,19 @@ function updateFreefall(dt) {
   const j = game.jumper;
   const wind = windNow() * phys.freefallSpeedup;
 
+  // Head-down dive: point your head at the ground to fall faster.
+  const diving = held.dive && !j.trick;
+  j.headDown = approach(j.headDown, diving ? 1 : 0, dt * 2);
+  if (j.headDown > 0.9) j.diveTime += dt;
+  else if (j.diveTime > 0) finishDive();
+
   // Gravity speeds you up until air resistance balances it (terminal velocity).
-  j.vy += (phys.terminal - j.vy) * ease(dt, phys.accelTau);
+  const terminal = phys.terminal * (1 + (DIVE_SPEEDUP - 1) * j.headDown);
+  j.vy += (terminal - j.vy) * ease(dt, phys.accelTau);
 
   // Tracking: flying your body sideways across the sky.
   let input = (held.right ? 1 : 0) - (held.left ? 1 : 0);
-  if (j.trick) input = 0;
+  if (j.trick || j.headDown > 0.2) input = 0;
   j.tracking = approach(j.tracking, input, dt * 4);
   if (Math.abs(j.tracking) > 0.3 && !j.trick) j.faceDir = Math.sign(j.tracking);
   const targetVx = wind + j.tracking * phys.track;
@@ -753,19 +773,26 @@ function updateFreefall(dt) {
   j.x += j.vx * dt;
   j.alt -= j.vy * dt;
 
-  // Tricks
-  if (!j.trick) {
+  // Tricks (not while head-down)
+  if (!j.trick && j.headDown < 0.2) {
     if (pressed.has('up')) startTrick('backflip');
     else if (pressed.has('down')) startTrick('frontflip');
     else if (pressed.has('spinL')) startTrick('spinLeft');
     else if (pressed.has('spinR')) startTrick('spinRight');
+    else if (pressed.has('roll')) startTrick('barrelRoll');
+  } else if (j.trick && j.turns === 1 && TRICKS[j.trick].kind === 'flip') {
+    // Press the same flip key again before the flip is 3/4 done to make it a double.
+    const again = (j.trick === 'backflip' && pressed.has('up')) || (j.trick === 'frontflip' && pressed.has('down'));
+    if (again && j.trickT < TRICK_TIME * 0.75) makeDouble();
   }
   if (j.trick) {
     const trick = TRICKS[j.trick];
+    const duration = trickDuration(j);
     j.trickT += dt;
-    const t = Math.min(1, j.trickT / TRICK_TIME);
-    const turn = trick.dir * easeInOut(t) * Math.PI * 2;
+    const t = Math.min(1, j.trickT / duration);
+    const turn = trick.dir * easeInOut(t) * Math.PI * 2 * j.turns;
     if (trick.kind === 'flip') j.angle = turn;
+    else if (trick.kind === 'roll') j.roll = turn;
     else j.spin = turn;
     if (t >= 1) finishTrick();
   }
@@ -782,25 +809,64 @@ function startTrick(id) {
   s.bestCombo = Math.max(s.bestCombo, s.combo);
   j.trick = id;
   j.trickT = 0;
+  j.turns = 1;
 }
 
-function finishTrick() {
-  const s = game.score;
+// A double takes a bit less than twice as long as a single.
+function trickDuration(j) {
+  return TRICK_TIME * (j.turns === 2 ? 1.7 : 1);
+}
+
+// Undo easeInOut: which t gives this eased value?
+function easeInOutInverse(y) {
+  return y < 0.5 ? Math.sqrt(y / 2) : 1 - Math.sqrt((1 - y) * 2) / 2;
+}
+
+function makeDouble() {
   const j = game.jumper;
-  const trick = TRICKS[j.trick];
-  let pts = trick.points * s.combo;
+  // Keep the body exactly where it is now, just stretch the rest of the trick.
+  const current = easeInOut(Math.min(1, j.trickT / TRICK_TIME));
+  j.turns = 2;
+  j.trickT = easeInOutInverse(current / 2) * trickDuration(j);
+  popup('Going for the double!', '#8ef');
+}
+
+function scoreTrick(id, name, basePoints) {
+  const s = game.score;
+  let pts = basePoints * s.combo;
   // Doing the same trick twice in a row is worth less. Mix it up!
-  if (s.lastTrickId === j.trick) pts = Math.round(pts / 2);
+  if (s.lastTrickId === id) pts = Math.round(pts / 2);
   s.tricks += pts;
   s.trickCount++;
   s.lastTrickEnd = game.time;
-  s.lastTrickId = j.trick;
-  let label = `${trick.name} +${pts}`;
+  s.lastTrickId = id;
+  let label = `${name} +${pts}`;
   if (s.combo > 1) label += `  ×${s.combo} combo!`;
   popup(label, s.combo > 1 ? '#ffd166' : '#fff');
+}
+
+function finishTrick() {
+  const j = game.jumper;
+  const trick = TRICKS[j.trick];
+  if (j.turns === 2) scoreTrick(`double-${j.trick}`, `Double ${trick.name.toLowerCase()}`, DOUBLE_FLIP_POINTS);
+  else scoreTrick(j.trick, trick.name, trick.points);
   j.trick = null;
+  j.turns = 1;
   j.angle = 0;
   j.spin = 0;
+  j.roll = 0;
+}
+
+function finishDive() {
+  const s = game.score;
+  const j = game.jumper;
+  const pts = Math.round(j.diveTime * DIVE_POINTS_PER_SEC);
+  if (pts > 0) {
+    s.tricks += pts;
+    s.trickCount++;
+    popup(`Head-down dive ${j.diveTime.toFixed(1)} s +${pts}`, '#fff');
+  }
+  j.diveTime = 0;
 }
 
 function deploy(byAAD) {
@@ -816,13 +882,21 @@ function deploy(byAAD) {
   } else {
     popup('Pull! Canopy opening…', '#fff');
   }
+  if (j.diveTime > 0) finishDive();
+  if (j.headDown > 0.5) {
+    s.items.push({ label: 'Hard opening (pulled while diving head-down)', pts: -50 });
+    popup('Hard opening! Get belly-down before you pull', '#ffb347');
+  }
   if (j.trick) {
     j.twists = 2.5;
     popup('Line twists! Kicking out of them…', '#ffb347');
   }
   j.trick = null;
+  j.turns = 1;
   j.angle = 0;
   j.spin = 0;
+  j.roll = 0;
+  j.headDown = 0;
   j.openT = 0;
   // Start off facing the target (or into the wind in free jump mode).
   const toward = game.mode === 'target' ? Math.sign(game.targetX - j.x) : -Math.sign(game.wind);
@@ -842,10 +916,19 @@ function updateCanopy(dt) {
     steer = 0;
     if (j.twists <= 0) popup('Twists cleared. You have control!', '#8ef');
   }
-  if (steer !== 0) j.facing = steer;
+  if (steer !== 0 && steer !== j.facing) {
+    j.facing = steer;
+    if (open >= 1) j.turnStartAlt = j.alt;
+  }
   const prevHeading = j.heading;
   j.heading = approach(j.heading, j.facing, dt * 2.2);
   j.turnRate = (j.heading - prevHeading) / dt;
+  // A turn low to the ground dives the canopy and builds speed: a swoop.
+  if (prevHeading !== j.facing && j.heading === j.facing && j.turnStartAlt !== null && j.turnStartAlt < 500) {
+    j.swoop = 1;
+    if (j.turnStartAlt >= SWOOP_TURN_ALT[0]) popup('Swooping! Now flare', '#8ef');
+  }
+  j.swoop = approach(j.swoop, 0, dt * 0.35 * (phys.canopySpeedup / 7));
 
   // Brakes slow you down. A flare is a big pull on the brakes right before landing.
   const braking = held.down && j.twists <= 0;
@@ -853,7 +936,7 @@ function updateCanopy(dt) {
   j.brakeHeld = braking ? j.brakeHeld + dt : 0;
 
   const turning = 1 + 0.5 * (1 - Math.abs(j.heading)); // turns make you sink faster
-  const forward = phys.canopyForward * (1 - 0.65 * j.brake);
+  const forward = phys.canopyForward * (1 - 0.65 * j.brake) * (1 + 0.6 * j.swoop);
   const sink = phys.canopySink * (1 - 0.45 * j.brake) * turning;
 
   j.vy += (sink - j.vy) * ease(dt, 0.35);
@@ -892,9 +975,16 @@ function land() {
       else items.push({ label: `Missed the target by ${fmt(dist)} ft`, pts: 0 });
     }
 
-    if (j.brake > 0.6 && j.brakeHeld < phys.perfectFlareTime) {
+    const lowTurn = j.turnStartAlt !== null && j.turnStartAlt < SWOOP_TURN_ALT[0];
+    const swoopTurn = j.turnStartAlt !== null && j.turnStartAlt <= SWOOP_TURN_ALT[1] && !lowTurn;
+    const perfectFlare = j.brake > 0.6 && j.brakeHeld < phys.perfectFlareTime;
+    if (lowTurn) {
+      j.landStyle = 'plf';
+      items.push({ label: `Low turn at ${fmt(j.turnStartAlt)} ft: hard landing!`, pts: -150 });
+    } else if (perfectFlare) {
       j.landStyle = 'stand';
       items.push({ label: 'Perfect flare: stand-up landing!', pts: 300 });
+      if (swoopTurn) items.push({ label: `Swoop landing (turned at ${fmt(j.turnStartAlt)} ft)`, pts: 400 });
     } else if (j.brake > 0.6) {
       j.landStyle = 'slide';
       items.push({ label: 'Flared too early: slid in on your butt', pts: 100 });
@@ -916,7 +1006,8 @@ function land() {
   game.result = { items, total, best: isBest ? total : best, isBest };
 
   const headline = { stand: 'Stand-up landing!', slide: 'Slid it in!', plf: 'Roll it out!', splash: 'SPLASH!' };
-  popup(headline[j.landStyle], '#fff');
+  const swooped = items.some(it => it.label.startsWith('Swoop landing'));
+  popup(swooped ? 'SWOOP! What a landing!' : headline[j.landStyle], swooped ? '#8ef' : '#fff');
   updateTouchVisibility();
 }
 
@@ -1413,9 +1504,10 @@ function drawJumper() {
 // Side view of a skydiver lying belly-down on the air.
 function drawFreefallBody(j) {
   ctx.scale(j.faceDir, 1);
-  ctx.rotate(j.angle);
-  ctx.scale(Math.cos(j.spin), 1); // a flat spin seen from the side
-  const t = Math.abs(j.tracking);
+  ctx.rotate(j.angle + j.headDown * (Math.PI / 2)); // head-down tips the head toward the ground
+  ctx.scale(Math.cos(j.spin), Math.cos(j.roll)); // spins and rolls seen from the side
+  // Tracking and diving both straighten the body out.
+  const t = Math.max(Math.abs(j.tracking), j.headDown);
   const arch = 1 - t;
 
   // Legs
@@ -1617,7 +1709,7 @@ function drawHud() {
   const isBalloon = game.aircraft.kind === 'balloon';
   const stallSpeed = game.aircraft.speed * 0.4;
   const panelW = Math.min(200, (W - 48) / 2);
-  const bottomInset = touchMode && isPlaying() ? 170 : 0;
+  const bottomInset = touchMode && isPlaying() ? 230 : 0;
   const flash = Math.sin(game.time * 12) > 0;
 
   // Left panel: altimeter
@@ -1633,7 +1725,8 @@ function drawHud() {
   fitFont(`${fmt(alt)} ft`, 750, 26, panelW - 24);
   ctx.fillText(`${fmt(alt)} ft`, 28, 66);
   let sub = game.aircraft.name;
-  if (phase === 'freefall') sub = `Fall rate ${fmt((j.vy / phys.freefallSpeedup) * FT_PER_SEC_TO_MPH)} mph`;
+  if (phase === 'freefall' && j.headDown > 0.5) sub = `Head-down! ${fmt((j.vy / phys.freefallSpeedup) * FT_PER_SEC_TO_MPH)} mph`;
+  else if (phase === 'freefall') sub = `Fall rate ${fmt((j.vy / phys.freefallSpeedup) * FT_PER_SEC_TO_MPH)} mph`;
   if (phase === 'canopy') sub = `Descent ${fmt((j.vy / phys.canopySpeedup) * FT_PER_SEC_TO_MPH)} mph`;
   if (phase === 'landed') sub = 'On the ground';
   if (phase === 'pilot') {
@@ -1687,6 +1780,10 @@ function drawHud() {
     }
   } else if (phase === 'freefall' && alt < PULL_ALTITUDE + 300) warning = flash ? (touchMode ? 'PULL!' : 'PULL! (Space)') : null;
   else if (phase === 'freefall' && alt < PULL_ALTITUDE + 1500) warning = 'Get ready to pull…';
+  else if (phase === 'canopy' && alt < SWOOP_TURN_ALT[0] && Math.abs(j.heading) < 0.9) {
+    warning = flash ? 'LOW TURN! Level out' : null;
+    warningColor = '#ff6b6b';
+  }
   else if (phase === 'canopy' && alt < phys.flareCueAlt) warning = flash ? (touchMode ? 'FLARE! Hold ▼' : 'FLARE! Hold ↓') : null;
   if (warning) {
     fitFont(warning, 800, 30, W - 32);
@@ -1713,8 +1810,8 @@ function drawHud() {
     flying: ['↑/↓ nose up/down  ·  ←/→ turn around  ·  Space: JUMP (above 3,500 ft)', '▲▼ nose · ◀▶ turn · JUMP above 3,500 ft'],
     balloon: ['Hold ↑ to fire the burner  ·  Space: JUMP (above 3,500 ft)', 'Hold ▲ for the burner · JUMP above 3,500 ft'],
     plane: ['Space or click: JUMP. Wait for the green light', 'Tap JUMP when the light is green'],
-    freefall: ['←/→ track  ·  ↑ backflip  ·  ↓ front flip  ·  Q/E spin  ·  Space: PULL', '▲▼ flips · ⟲⟳ spins · PULL before 3,000 ft'],
-    canopy: ['←/→ steer  ·  hold ↓ for brakes. Flare just before you land', '◀ ▶ steer · hold ▼ to flare just before landing'],
+    freefall: ['←/→ track  ·  ↑/↓ flips (tap twice: double)  ·  Q/E spin  ·  R roll  ·  hold F dive  ·  Space: PULL', '▲▼ flips (tap twice: double) · ⟲⟳ spins · ROLL · hold DIVE'],
+    canopy: ['←/→ steer  ·  hold ↓ to flare  ·  turn around at 150–400 ft, then flare, to swoop', '◀ ▶ steer · hold ▼ to flare · turn at 150–400 ft to swoop'],
   };
   if (hints[hintKey]) {
     const text = hints[hintKey][touchMode ? 1 : 0];
