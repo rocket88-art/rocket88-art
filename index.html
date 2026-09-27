@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="A little browser skydiving game: jump, do tricks, and land on the target.">
+  <title>Rocket88 Skydive</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- The whole game world is drawn onto this one canvas by game.js -->
+  <canvas id="game" aria-label="Skydiving game"></canvas>
+
+  <!-- Start screen -->
+  <div id="menu" class="overlay">
+    <div class="panel">
+      <h1>Rocket88 <span>Skydive</span></h1>
+      <p class="tagline">Pick a place, pick a ride, and jump.</p>
+
+      <h2>1. Where are you jumping?</h2>
+      <div id="location-list" class="choices"></div>
+
+      <h2>2. What are you jumping from?</h2>
+      <div id="aircraft-list" class="choices"></div>
+
+      <h2>3. Mode</h2>
+      <div id="mode-list" class="choices"></div>
+
+      <div class="start-row">
+        <button id="start-btn" class="big" type="button">Board the plane</button>
+        <p id="best-line" class="best"></p>
+      </div>
+
+      <details class="howto">
+        <summary>How to play</summary>
+        <ol>
+          <li><strong>Exit:</strong> wait for the <em>green light</em>, then press <kbd>Space</kbd> to jump.
+            Wind pushes you around, so the best exit point is upwind of the target.</li>
+          <li><strong>Freefall:</strong> <kbd>←</kbd>/<kbd>→</kbd> to track sideways,
+            <kbd>↑</kbd> backflip, <kbd>↓</kbd> front flip, <kbd>Q</kbd>/<kbd>E</kbd> spins.
+            Start the next trick right after the last one to build a combo.</li>
+          <li><strong>Pull:</strong> press <kbd>Space</kbd> around 3,000 ft. Pull in the middle of a trick
+            and you'll get line twists. Forget to pull and the AAD saves you, for a penalty.</li>
+          <li><strong>Canopy:</strong> <kbd>←</kbd>/<kbd>→</kbd> to steer. Hold <kbd>↓</kbd> for brakes.
+            Flare (hold <kbd>↓</kbd>) just before touchdown for a stand-up landing. Landing into the wind earns a bonus.</li>
+        </ol>
+        <p><kbd>Esc</kbd> returns to this menu. On a phone, use the on-screen buttons.</p>
+      </details>
+    </div>
+  </div>
+
+  <!-- Score screen after landing -->
+  <div id="results" class="overlay hidden">
+    <div class="panel">
+      <h1 id="results-title">Nice jump!</h1>
+      <ul id="results-list"></ul>
+      <p id="results-total" class="total"></p>
+      <p id="results-best" class="new-best"></p>
+      <div class="row">
+        <button id="again-btn" class="big" type="button">Jump again</button>
+        <button id="menu-btn" class="secondary" type="button">Change jump</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- On-screen buttons for phones and tablets -->
+  <div id="touch" class="hidden">
+    <div class="pad dpad">
+      <button class="tbtn" data-action="up" type="button">▲</button>
+      <button class="tbtn" data-action="left" type="button">◀</button>
+      <button class="tbtn" data-action="down" type="button">▼</button>
+      <button class="tbtn" data-action="right" type="button">▶</button>
+    </div>
+    <div class="pad actions">
+      <button class="tbtn" data-action="spinL" type="button">⟲</button>
+      <button class="tbtn" data-action="spinR" type="button">⟳</button>
+      <button class="tbtn act" data-action="action" type="button">JUMP</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
